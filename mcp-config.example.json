@@ -1,0 +1,13 @@
+{
+  "$comment": "示例配置：仅使用环境变量占位符，不含任何真实 Token 或账号凭证。",
+  "mcpServers": {
+    "mcd-mcp": {
+      "type": "streamablehttp",
+      "url": "https://mcp.mcd.cn",
+      "description": "McDonald's China MCP Server",
+      "headers": {
+        "Authorization": "Bearer ${MCD_MCP_TOKEN}"
+      }
+    }
+  }
+}
