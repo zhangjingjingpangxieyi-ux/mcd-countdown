@@ -17,10 +17,12 @@ description: 查询麦当劳账户中所有会过期的资产（券、积分、�
 
 ## 执行方式
 
-在 `scripts/` 目录下运行主脚本：
+**先切到本 SKILL.md 所在的目录**（脚本在同级 `scripts/` 下），再运行：
 
 ```bash
-# 终端时间轴（给人看）
+cd <本 skill 目录>          # 例如 ~/.workbuddy/skills/mcd-countdown
+
+# 终端时间轴（给人看，默认）
 python scripts/countdown.py
 
 # 结构化数据（给 Agent 进一步处理）
@@ -29,12 +31,18 @@ python scripts/countdown.py --json
 # 可视化 HTML 页面
 python scripts/countdown.py --html report.html
 
+# HTML + PNG 分享图一步出（调用系统自带 Edge，无第三方依赖）
+python scripts/countdown.py --png report.png
+
 # 无 Token 时用示例数据演示
 python scripts/countdown.py --demo
 ```
 
+Windows 上若 `python` 不可用，改用 `py -3` 或 Python 绝对路径。
+仅需 Python 3.9+ 标准库，无第三方依赖。
+
 Token 从环境变量 `MCD_MCP_TOKEN` 读取；未设置时会回退到本地
-`~/.workbuddy/.mcp.json` 中的 `mcd-mcp` 条目。
+`~/.workbuddy/.mcp.json` 中的 `mcd-mcp` 条目（本机已配置，可直接跑）。
 
 ## 输出怎么解读
 
@@ -44,6 +52,7 @@ Token 从环境变量 `MCD_MCP_TOKEN` 读取；未设置时会回退到本地
    「已过期」是不可逆的真实损失，回答用户时应优先指出。
 2. **倒计时时间轴** —— 按失效时间升序，标记剩余天数。
 3. **时段提醒** —— 券的每日可用时段，以及当前时刻是否在窗口内。
+4. **奖品清单** —— 奖品接口不返回失效时间，只列名称与状态（提醒文案有明确日期的会进时间轴）。
 
 另有「机会日历」区块，列出未来有活动的日期（不是失效时间，是机会）。
 
@@ -61,3 +70,5 @@ Token 从环境变量 `MCD_MCP_TOKEN` 读取；未设置时会回退到本地
 - 抢购时刻是从活动正文中正则提取的，若官方文案改版可能漏抓
 - 超过 365 天的项会被过滤（例如抽奖活动可能到 2030 年）
 - 积分商城只展示「当前积分够换」的商品
+- 奖品没有结构化过期时间，`timeRemindText` 文案提取不到日期的奖品不进时间轴，只进「奖品清单」——回答用户关于奖品何时过期的问题时，要说明官方未给出日期
+- PNG 截图依赖系统自带 Edge（Windows/macOS 均预装）；没有 Edge 时跳过截图并提示

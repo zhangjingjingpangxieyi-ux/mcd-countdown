@@ -47,6 +47,7 @@ KIND_LABEL = {
     "mall": "积分商城",
     "campaign": "营销活动",
     "lottery": "抽奖活动",
+    "prize": "奖品",
 }
 
 # ---------------------------------------------------------------- 解析层
@@ -223,15 +224,53 @@ def parse_lottery(data):
                   note=d.get("activityStatusText", ""))]
 
 
+PRIZE_DATE_RE = re.compile(r"(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})")
+
+
+def parse_prizes(data):
+    """奖品：提醒文案里有明确日期的进时间轴，没有的进「奖品清单」。
+
+    接口不返回结构化过期时间，只有可选的 timeRemindText 文案；
+    提取不到日期时宁可不放时间轴，也不编一个出来。
+    """
+    out, listing = [], []
+    d = (data or {}).get("data") if isinstance(data, dict) else None
+    prizes = d.get("prizes") if isinstance(d, dict) else None
+    if not isinstance(prizes, list):
+        return out, listing
+    for p in prizes:
+        if not isinstance(p, dict) or p.get("status") != 0:
+            continue  # 只关心「可用」状态的奖品
+        name = (p.get("name") or "奖品").strip()
+        ptype = (p.get("prizeTypeText") or "").strip()
+        title = f"{name}（{ptype}）" if ptype and ptype not in name else name
+        remind = (p.get("timeRemindText") or "").strip()
+        m = PRIZE_DATE_RE.search(remind)
+        if m:
+            y, mo, dd = (int(x) for x in m.groups())
+            try:
+                end = datetime(y, mo, dd, 23, 59)
+            except ValueError:
+                end = None
+            if end and 0 <= (end - NOW).days <= 365:
+                out.append(asset("prize", title, end, note=remind))
+                continue
+        listing.append({"name": title,
+                        "status": (p.get("statusText") or "可用").strip(),
+                        "remind": remind})
+    return out, listing
+
+
 # ---------------------------------------------------------------- 采集
 
 
 def collect(demo: bool = False):
     if demo:
-        return sorted(DEMO_ASSETS, key=lambda a: a["deadline"]), DEMO_INFO, DEMO_DAYS
+        return (sorted(DEMO_ASSETS, key=lambda a: a["deadline"]),
+                DEMO_INFO, DEMO_DAYS, DEMO_PRIZES)
     c = McdMcpClient()
     points, info = parse_account(unwrap(c.call_tool("query-my-account")))
-    items, days = list(points), []
+    items, days, prizes = list(points), [], []
     try:
         items += parse_coupons(unwrap(c.call_tool("query-my-coupons")))
     except Exception as e:
@@ -249,10 +288,15 @@ def collect(demo: bool = False):
         items += dl
     except Exception as e:
         print(f"[warn] campaign-calendar 采集失败：{e}", file=sys.stderr)
+    try:
+        pitems, prizes = parse_prizes(unwrap(c.call_tool("query-my-prizes")))
+        items += pitems
+    except Exception as e:
+        print(f"[warn] query-my-prizes 采集失败：{e}", file=sys.stderr)
     items = [a for a in items
              if a.get("deadline") and a["days_left"] is not None and 0 <= a["days_left"] <= 365]
     items.sort(key=lambda a: a["deadline"])
-    return items, info, days
+    return items, info, days, prizes
 
 
 # 示例数据：真实账号只有 1 张券、85 分，截图太空，README/演示时补上
@@ -271,6 +315,11 @@ DEMO_ASSETS = [
     asset("mall", "麦麦开心乐园餐兑换券", NOW + timedelta(days=19), "680 积分", None, "商品券"),
     asset("point", "下月将过期积分", NOW + timedelta(days=41), "130 分", None, "下月底清零"),
     asset("lottery", "积分抽奖 · 麦麦好运到", NOW + timedelta(days=63), "单次 24 积分", None, "进行中"),
+    asset("prize", "麦麦全家桶（门票）", NOW + timedelta(days=33), None, None, "奖品 · 请在有效期内使用"),
+]
+DEMO_PRIZES = [
+    {"name": "麦咖啡买一送一（奖品）", "status": "可用", "remind": ""},
+    {"name": "派Day半价券（奖品）", "status": "可用", "remind": "详询门店"},
 ]
 
 # ---------------------------------------------------------------- 终端输出
@@ -289,7 +338,7 @@ def urgency(a):
     return "·"
 
 
-def render_terminal(items, info, days=()):
+def render_terminal(items, info, days=(), prizes=()):
     W = 68
     print("=" * W)
     print("  麦麦倒计时 · 你的麦当劳资产失效时间表")
@@ -330,6 +379,13 @@ def render_terminal(items, info, days=()):
             flag = "现在可用" if ok else f"现在不可用（{s}-{e}）"
             print(f"  {'●' if ok else '○'} {a['title']}  {flag}")
 
+    if prizes:
+        print(f"\n  奖品清单（官方未给出失效日期，使用前自行确认）")
+        print("  " + "-" * (W - 4))
+        for p in prizes:
+            extra = f"  ·  {p['remind']}" if p.get("remind") else ""
+            print(f"  ◆ {p['name']}  [{p['status']}]{extra}")
+
     if days:
         print(f"\n  机会日历（未来有活动的日子）")
         print("  " + "-" * (W - 4))
@@ -368,11 +424,12 @@ background:#F1EFE8;color:#5F5E5A}
 .m{font-size:12px;color:#8A8A82;margin-top:3px}
 .n{font-size:12px;color:#B45309;margin-top:3px}
 .k{font-size:11px;color:#8A8A82;border:1px solid #E4E4DC;border-radius:5px;padding:1px 6px;margin-left:6px}
+.h2note{font-size:11px;font-weight:400;color:#A0A09A;margin-left:8px}
 .foot{font-size:12px;color:#A0A09A;margin-top:28px;text-align:center}
 """
 
 
-def render_html(items, info, path, days=()):
+def render_html(items, info, path, days=(), prizes=()):
     live = [a for a in items if a["days_left"] is not None and a["days_left"] >= 0]
     rows = []
     for a in live:
@@ -408,6 +465,16 @@ def render_html(items, info, path, days=()):
         )
         cal = "<h2>机会日历</h2>" + cells
 
+    pz = ""
+    if prizes:
+        cells = "".join(
+            f"<div class='item'><span class='badge'>奖品</span>"
+            f"<div><div class='t'>{p['name']}<span class='k'>{p['status']}</span></div>"
+            f"<div class='m'>{p['remind'] or '官方未给出失效日期，使用前自行确认'}</div></div></div>"
+            for p in prizes[:8]
+        )
+        pz = ("<h2>奖品清单 <span class='h2note'>官方未给出失效日期</span></h2>" + cells)
+
     html = (
         "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -416,12 +483,48 @@ def render_html(items, info, path, days=()):
         f"<div class='sub'>你的麦当劳资产失效时间表 · {NOW:%Y-%m-%d %H:%M} · 数据源：麦当劳 MCP（只读）</div>"
         + loss +
         f"<h2>即将失效 · {len(live)} 项</h2>" + ("".join(rows) or "<div class='m'>暂无</div>")
-        + cal +
+        + pz + cal +
         "<div class='foot'>只读采集，不会领券、下单或抽奖</div>"
         "</div></body></html>"
     )
     Path(path).write_text(html, encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------- PNG 截图
+
+
+def find_edge():
+    import shutil
+    exe = shutil.which("msedge")
+    if exe:
+        return exe
+    for p in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+              r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+              "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+              "/usr/bin/microsoft-edge"):
+        if Path(p).exists():
+            return p
+    return None
+
+
+def shot_png(html_path, png_path, size="800,1600"):
+    """用系统自带 Edge 无头模式截图，不引入第三方依赖。"""
+    exe = find_edge()
+    if not exe:
+        print("[warn] 未找到 Edge，无法自动截图；请手动打开 HTML 截图", file=sys.stderr)
+        return None
+    import subprocess
+    url = Path(html_path).resolve().as_uri()
+    subprocess.run(
+        [exe, "--headless", "--disable-gpu", "--hide-scrollbars",
+         f"--screenshot={Path(png_path).resolve()}",
+         f"--window-size={size}", url],
+        check=False, capture_output=True, timeout=90)
+    if Path(png_path).exists():
+        return png_path
+    print("[warn] Edge 截图未产出文件", file=sys.stderr)
+    return None
 
 
 # ---------------------------------------------------------------- 入口
@@ -431,19 +534,30 @@ def main():
     ap = argparse.ArgumentParser(description="麦麦倒计时：麦当劳账户资产失效时间轴")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--html", metavar="PATH", help="生成可视化 HTML")
+    ap.add_argument("--png", metavar="PATH", help="生成 HTML 后再自动截图（需系统自带 Edge）")
+    ap.add_argument("--png-size", default="800,1600", metavar="WxH",
+                    help="截图尺寸，默认 800x1600")
     ap.add_argument("--demo", action="store_true", help="使用示例数据（截图用）")
     args = ap.parse_args()
 
-    items, info, days = collect(demo=args.demo)
+    items, info, days, prizes = collect(demo=args.demo)
 
     if args.json:
         print(json.dumps({"generated_at": NOW.isoformat(timespec="minutes"),
-                          "account": info, "assets": items, "calendar": days},
+                          "account": info, "assets": items, "calendar": days,
+                          "prizes": prizes},
                          ensure_ascii=False, indent=2))
-    elif args.html:
-        print(f"已生成 {render_html(items, info, args.html, days)}")
+    elif args.html or args.png:
+        html_path = args.html or (str(Path(args.png).with_suffix(".html"))
+                                  if args.png else "report.html")
+        render_html(items, info, html_path, days, prizes)
+        print(f"已生成 {html_path}")
+        if args.png:
+            out = shot_png(html_path, args.png, args.png_size)
+            if out:
+                print(f"已生成 {out}")
     else:
-        render_terminal(items, info, days)
+        render_terminal(items, info, days, prizes)
 
 
 if __name__ == "__main__":
